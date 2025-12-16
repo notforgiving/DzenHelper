@@ -1,0 +1,14 @@
+node_modules/
+dist/
+temp/
+*.log
+.env
+.DS_Store
+*.mp4
+*.mp3
+*.wav
+*.ogg
+
+
+
+
