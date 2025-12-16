@@ -19,8 +19,8 @@ interface TranscriptionSession {
 // Хранилище активных сессий транскрипции
 const transcriptionSessions = new Map<number, TranscriptionSession>();
 
-// Таймаут для автоматического завершения сессии (30 секунд бездействия)
-const AUTO_FINISH_TIMEOUT = 30 * 1000; // 30 секунд
+// Таймаут для автоматического завершения сессии (5 секунд бездействия)
+const AUTO_FINISH_TIMEOUT = 5 * 1000; // 5 секунд
 
 // Максимальное время жизни сессии (5 минут)
 const MAX_SESSION_LIFETIME = 5 * 60 * 1000;
@@ -54,17 +54,18 @@ function scheduleAutoFinish(session: TranscriptionSession): void {
     const fullTranscription = session.messages.join('\n\n');
 
     // Обновляем статусное сообщение о начале автоматической обработки
-    // editMessageText не поддерживает ReplyKeyboardMarkup, поэтому не передаем клавиатуру
     if (session.statusMessageId && session.ctx) {
       try {
         await session.ctx.telegram.editMessageText(
           session.chatId,
           session.statusMessageId,
           undefined,
-          `⏱️ Не получено новых сообщений 30 секунд. Начинаю обработку автоматически...`
-        );
+          `⏱️ Не получено новых сообщений 5 секунд. Начинаю обработку автоматически...`
+        ).catch(() => {
+          // Игнорируем ошибки редактирования - обработка продолжится с новым сообщением
+        });
       } catch (error) {
-        // Игнорируем ошибки редактирования
+        // Игнорируем ошибки редактирования - обработка продолжится
       }
     }
 
@@ -126,7 +127,7 @@ export async function handleTranscriptionMessage(ctx: Context): Promise<void> {
   // Отправляем подтверждение получения сообщения
   const confirmationMessage = await ctx.reply(
     `✅ Получено сообщение ${session.messages.length}.\n\n` +
-    `Обработка начнется автоматически через 30 секунд после последнего сообщения.\n` +
+    `Обработка начнется автоматически через 5 секунд после последнего сообщения.\n` +
     `Или нажмите кнопку "🚀 Начать обработку" для немедленного начала.`,
     getMainKeyboard()
   );
@@ -139,7 +140,7 @@ export async function handleTranscriptionMessage(ctx: Context): Promise<void> {
         session.statusMessageId,
         undefined,
         `📝 Собрано сообщений: ${session.messages.length}\n\n` +
-        `⏱️ Обработка начнется автоматически через 30 секунд бездействия.\n` +
+        `⏱️ Обработка начнется автоматически через 5 секунд бездействия.\n` +
         `Или нажмите кнопку "🚀 Начать обработку" для немедленного начала.`
       );
     } catch (error) {
@@ -181,7 +182,7 @@ export async function handleFinishTranscription(ctx: Context): Promise<void> {
 
   if (!session || session.messages.length === 0) {
     await ctx.reply(
-      '❌ Нет собранных сообщений транскрипции.\n\nОтправьте текст транскрипции сообщениями. Обработка начнется автоматически через 30 секунд после последнего сообщения.',
+      '❌ Нет собранных сообщений транскрипции.\n\nОтправьте текст транскрипции сообщениями. Обработка начнется автоматически через 5 секунд после последнего сообщения.',
       getMainKeyboard()
     );
     return;
@@ -218,6 +219,45 @@ export async function handleFinishTranscription(ctx: Context): Promise<void> {
 }
 
 /**
+ * Безопасно редактирует сообщение или отправляет новое, если редактирование не удается
+ */
+async function safeEditMessage(
+  ctx: Context,
+  messageId: number | undefined,
+  text: string
+): Promise<number> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    throw new Error('Chat ID не найден');
+  }
+
+  // Если messageId не передан, отправляем новое сообщение
+  if (!messageId) {
+    const newMessage = await ctx.reply(text);
+    return newMessage.message_id;
+  }
+
+  // Пытаемся отредактировать сообщение
+  try {
+    await ctx.telegram.editMessageText(chatId, messageId, undefined, text);
+    return messageId;
+  } catch (error: any) {
+    // Если редактирование не удалось, отправляем новое сообщение
+    console.warn(`Не удалось отредактировать сообщение ${messageId}, отправляю новое:`, error.message);
+    try {
+      // Пытаемся удалить старое сообщение
+      await ctx.telegram.deleteMessage(chatId, messageId).catch(() => {
+        // Игнорируем ошибки удаления
+      });
+    } catch (deleteError) {
+      // Игнорируем ошибки удаления
+    }
+    const newMessage = await ctx.reply(text);
+    return newMessage.message_id;
+  }
+}
+
+/**
  * Обрабатывает транскрипцию: генерирует статью, изображение и сохраняет в БД
  */
 async function processTranscription(
@@ -230,23 +270,16 @@ async function processTranscription(
 
   try {
     // Обновляем статус - начало обработки
-    if (statusMessageId) {
-      await ctx.telegram.editMessageText(
-        chatId,
-        statusMessageId,
-        undefined,
-        '🔄 Начинаю обработку транскрипции...'
-      );
-    } else {
-      const statusMsg = await ctx.reply('🔄 Начинаю обработку транскрипции...');
-      statusMessageId = statusMsg.message_id;
-    }
+    statusMessageId = await safeEditMessage(
+      ctx,
+      statusMessageId,
+      '🔄 Начинаю обработку транскрипции...'
+    );
 
     // Шаг 1: Генерация статьи
-    await ctx.telegram.editMessageText(
-      chatId,
-      statusMessageId!,
-      undefined,
+    statusMessageId = await safeEditMessage(
+      ctx,
+      statusMessageId,
       '✍️ Генерирую статью на основе транскрипции...'
     );
 
@@ -264,10 +297,9 @@ async function processTranscription(
     }
 
     // Шаг 2: Генерация изображения
-    await ctx.telegram.editMessageText(
-      chatId,
-      statusMessageId!,
-      undefined,
+    statusMessageId = await safeEditMessage(
+      ctx,
+      statusMessageId,
       '🎨 Генерирую изображение для статьи...'
     );
 
@@ -282,10 +314,9 @@ async function processTranscription(
     }
 
     // Шаг 3: Сохранение в базу данных
-    await ctx.telegram.editMessageText(
-      chatId,
-      statusMessageId!,
-      undefined,
+    statusMessageId = await safeEditMessage(
+      ctx,
+      statusMessageId,
       '💾 Сохраняю статью в базу данных...'
     );
 
@@ -293,10 +324,9 @@ async function processTranscription(
     const savedArticle = await supabaseService.saveArticle(article, 'готово к публикации');
 
     // Шаг 4: Отправка результатов
-    await ctx.telegram.editMessageText(
-      chatId,
-      statusMessageId!,
-      undefined,
+    statusMessageId = await safeEditMessage(
+      ctx,
+      statusMessageId,
       '📤 Отправляю результаты...'
     );
 
@@ -343,18 +373,13 @@ async function processTranscription(
 
     const errorMessage = `❌ Ошибка при обработке: ${error.message || 'Неизвестная ошибка'}`;
 
-    if (statusMessageId) {
-      try {
-        await ctx.telegram.editMessageText(
-          chatId,
-          statusMessageId,
-          undefined,
-          errorMessage
-        );
-      } catch (editError) {
-        await ctx.reply(errorMessage, getMainKeyboard());
-      }
-    } else {
+    // Используем безопасное редактирование для сообщения об ошибке
+    try {
+      await safeEditMessage(ctx, statusMessageId, errorMessage);
+      // Отправляем клавиатуру отдельным сообщением
+      await ctx.reply('Используйте кнопки ниже для продолжения работы.', getMainKeyboard());
+    } catch (error) {
+      // Если даже безопасное редактирование не сработало, просто отправляем новое сообщение
       await ctx.reply(errorMessage, getMainKeyboard());
     }
   }
