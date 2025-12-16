@@ -1,20 +1,11 @@
-export interface ProcessingResult {
-  videoUrl: string;
-  transcription: string;
-  article: string;
-  imagePath?: string;
-}
+// Типы для работы с транскрипцией и статьями
+export type ArticleStatus = 'опубликовано' | 'готово к публикации';
 
-export interface YouTubeVideoInfo {
-  title: string;
-  duration: number;
-  url: string;
-}
-
-export interface TranscriptionChunk {
+export interface ArticleRecord {
+  id?: number;
   text: string;
-  start: number;
-  end: number;
+  status: ArticleStatus;
+  created_at?: string;
 }
 
 

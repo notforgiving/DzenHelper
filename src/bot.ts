@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { Telegraf } from 'telegraf';
-import { handleStart, handleHelp } from './handlers/commands';
-import { handleYouTubeUrl } from './handlers/youtube';
-import { VideoDownloader } from './services/downloader';
+import { handleStart, handleHelp, handleCancel } from './handlers/commands';
+import { handleTranscriptionMessage, handleFinishTranscription } from './handlers/transcription';
 import { ensureTempDir } from './utils/tempFiles';
+import { SupabaseService } from './services/supabase';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -20,29 +20,65 @@ const bot = new Telegraf(BOT_TOKEN, {
 // Инициализация
 async function initialize() {
   try {
+    // Создаем временную директорию для изображений
     await ensureTempDir();
     console.log('✅ Временная директория создана');
   } catch (error) {
     console.error('❌ Ошибка при создании временной директории:', error);
+  }
+
+  // Проверяем подключение к Supabase
+  try {
+    const supabaseService = new SupabaseService();
+    const isConnected = await supabaseService.checkConnection();
+    if (isConnected) {
+      console.log('✅ Подключение к Supabase установлено');
+    } else {
+      console.warn('⚠️ Не удалось подключиться к Supabase. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY');
+    }
+  } catch (error) {
+    console.warn('⚠️ Ошибка при проверке подключения к Supabase:', error);
   }
 }
 
 // Обработчики команд
 bot.command('start', handleStart);
 bot.command('help', handleHelp);
+bot.command('finish', handleFinishTranscription);
+bot.command('cancel', handleCancel);
 
-// Обработчик текстовых сообщений (YouTube ссылки)
+// Обработчик текстовых сообщений (транскрипция и кнопки)
 bot.on('text', async (ctx) => {
+  // Проверяем, что сообщение существует и является текстовым
+  if (!ctx.message || !('text' in ctx.message)) {
+    return;
+  }
+  
   const text = ctx.message.text;
   
-  if (VideoDownloader.isValidYouTubeUrl(text)) {
-    await handleYouTubeUrl(ctx, text);
-  } else {
-    await ctx.reply(
-      '❌ Пожалуйста, отправьте валидную ссылку на YouTube видео.\n\n' +
-      'Пример: https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-    );
+  // Игнорируем команды (они обрабатываются отдельными обработчиками)
+  if (text.startsWith('/')) {
+    return;
   }
+  
+  // Обрабатываем нажатия на кнопки клавиатуры
+  if (text === '📋 Помощь') {
+    await handleHelp(ctx);
+    return;
+  }
+  
+  if (text === '🚀 Начать обработку') {
+    await handleFinishTranscription(ctx);
+    return;
+  }
+  
+  if (text === '❌ Отменить сессию') {
+    await handleCancel(ctx);
+    return;
+  }
+  
+  // Обрабатываем как сообщение транскрипции
+  await handleTranscriptionMessage(ctx);
 });
 
 // Обработка ошибок
@@ -57,10 +93,9 @@ async function start() {
   
   console.log('🚀 Запуск Telegram бота...');
   console.log('📋 Убедитесь, что:');
-  console.log('   - yt-dlp установлен');
-  console.log('   - ffmpeg установлен');
   console.log('   - Ollama запущен локально');
   console.log('   - Модели загружены в Ollama');
+  console.log('   - Supabase настроен (SUPABASE_URL и SUPABASE_ANON_KEY в .env)');
   
   bot.launch().then(() => {
     console.log('✅ Бот успешно запущен!');
