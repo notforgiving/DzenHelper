@@ -10,7 +10,12 @@ export class ImageGenerator {
     // Используем бесплатный Hugging Face Inference API
     // Можно использовать без токена, но с ограничениями
     const hfToken = process.env.HUGGINGFACE_API_TOKEN || undefined;
-    this.hf = new HfInference(hfToken);
+    // Указываем новый актуальный baseUrl Hugging Face Router
+    const hfBaseUrl = process.env.HUGGINGFACE_API_URL || 'https://router.huggingface.co';
+    // Описываем опции клиента HF (тип обходим через any, т.к. baseUrl еще не в типах)
+    const hfOptions: any = { baseUrl: hfBaseUrl };
+    // Создаем клиент HF с корректным базовым URL и токеном
+    this.hf = new HfInference(hfToken, hfOptions);
     // Используем бесплатную модель Stable Diffusion
     this.model = process.env.IMAGE_MODEL || 'stabilityai/stable-diffusion-2-1';
   }
