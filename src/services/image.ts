@@ -27,6 +27,11 @@ export class ImageGenerator {
   }
 
   async generateImage(articleText: string, customPrompt?: string): Promise<string> {
+    // Проверяем наличие токена: без HUGGINGFACE_API_TOKEN router вернет 401
+    if (!this.token) {
+      // Сообщаем о необходимости задать токен
+      throw new Error('Для генерации изображений укажите HUGGINGFACE_API_TOKEN (Personal access token из Hugging Face) в .env или окружении.');
+    }
     const defaultPrompt = process.env.IMAGE_PROMPT || 
       'Create an image that illustrates the topic of the article';
     
@@ -62,12 +67,14 @@ export class ImageGenerator {
     // Пробуем другую модель Stable Diffusion
     try {
       // Используем альтернативную модель через тот же роутер
-      const alternativeModel = 'runwayml/stable-diffusion-v1-5';
+      const alternativeModel = 'stabilityai/sdxl-turbo';
+      // Генерируем изображение через альтернативную модель
       const buffer = await this.generateViaHttp(
         alternativeModel,
         prompt,
         {
-          num_inference_steps: 20,
+          num_inference_steps: 15,
+          guidance_scale: 0.0,
         }
       );
       // Сохраняем изображение
@@ -120,7 +127,19 @@ export class ImageGenerator {
     });
     // Проверяем успешный статус
     if (!response.ok) {
+      // Читаем тело ошибки
       const errorText = await response.text();
+      // Если нет авторизации, даем явную подсказку
+      if (response.status === 401) {
+        // Бросаем понятную ошибку про токен Hugging Face
+        throw new Error('HF request failed: 401 Unauthorized. Проверьте HUGGINGFACE_API_TOKEN или задайте его в .env');
+      }
+      // Если модель не найдена или закрыта, даем подсказку сменить модель
+      if (response.status === 404) {
+        // Подсказываем задать доступную модель через переменную окружения
+        throw new Error('HF request failed: 404 Not Found. Проверьте значение IMAGE_MODEL (например, stabilityai/sdxl-turbo) и доступность модели.');
+      }
+      // Бросаем общую ошибку для других статусов
       throw new Error(`HF request failed: ${response.status} ${errorText}`);
     }
     // Читаем бинарное тело ответа
