@@ -283,7 +283,9 @@ async function processTranscription(
       '✍️ Генерирую статью на основе транскрипции...'
     );
 
+    // Создаем генератор статей
     const articleGenerator = new ArticleGenerator();
+    // Запускаем стриминговую генерацию статьи
     const article = await articleGenerator.generateArticleStreaming(
       transcription,
       () => {
@@ -296,17 +298,20 @@ async function processTranscription(
       throw new Error('Не удалось сгенерировать статью');
     }
 
-    // Шаг 2: Генерация изображения
+    // Обновляем статус после генерации статьи
     statusMessageId = await safeEditMessage(
       ctx,
       statusMessageId,
-      '🎨 Генерирую изображение для статьи...'
+      '✍️ Статья готова. Начинаю генерацию изображения...'
     );
 
+    // Создаем генератор изображений
     const imageGenerator = new ImageGenerator();
+    // Заготовка под путь изображения
     let imagePath: string | undefined;
 
     try {
+      // Генерируем изображение сразу после статьи
       imagePath = await imageGenerator.generateImage(article, IMAGE_PROMPT);
     } catch (imageError: any) {
       console.warn('Ошибка генерации изображения:', imageError.message);
@@ -323,11 +328,11 @@ async function processTranscription(
     const supabaseService = new SupabaseService();
     const savedArticle = await supabaseService.saveArticle(article, 'готово к публикации');
 
-    // Шаг 4: Отправка результатов
+    // Обновляем статус перед отправкой результатов
     statusMessageId = await safeEditMessage(
       ctx,
       statusMessageId,
-      '📤 Отправляю результаты...'
+      '📤 Отправляю статью и изображение...'
     );
 
     // Отправляем статью
@@ -345,7 +350,8 @@ async function processTranscription(
     // Отправляем изображение, если оно было создано
     if (imagePath) {
       try {
-        await ctx.replyWithPhoto({ source: imagePath });
+        // Отправляем изображение вместе с финальным сообщением
+        await ctx.replyWithPhoto({ source: imagePath }, { caption: '🎨 Иллюстрация к статье' });
       } catch (photoError) {
         console.warn('Ошибка отправки изображения:', photoError);
       }
