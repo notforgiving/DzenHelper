@@ -1,7 +1,7 @@
 {
   "name": "dzen-helper",
   "version": "1.0.0",
-  "description": "Telegram bot for generating articles from transcription text",
+  "description": "Простой Telegram-бот‑планировщик постов для Дзена с очередью в Supabase",
   "main": "dist/bot.js",
   "scripts": {
     "build": "tsc",
@@ -12,26 +12,20 @@
   "keywords": [
     "telegram",
     "bot",
-    "transcription",
-    "ollama",
-    "article",
+    "scheduler",
+    "planner",
+    "posts",
     "supabase"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "telegraf": "^4.15.0",
-    "ollama": "^0.5.7",
     "dotenv": "^16.4.5",
-    "fs-extra": "^11.2.0",
-    "uuid": "^9.0.1",
-    "@huggingface/inference": "^2.6.4",
     "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
-    "@types/fs-extra": "^11.0.4",
-    "@types/uuid": "^9.0.7",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2"
   }
