@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import { handleStart, handleHelp, getMainKeyboard, getCancelKeyboard } from './handlers/commands';
 import { SupabaseService } from './services/supabase';
+import { GoogleDriveService } from './services/googledrive';
 import { getMoscowDateComponents, createMoscowDate, formatMoscowTime } from './utils/timezone';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -19,6 +20,8 @@ const bot = new Telegraf(BOT_TOKEN, {
 
 // Создаем один экземпляр сервиса Supabase для всего бота
 const supabaseService = new SupabaseService();
+// Создаем экземпляр сервиса Google Drive
+const googleDriveService = new GoogleDriveService();
 // Создаем карту для хранения состояния пользователя по идентификатору чата
 const userState = new Map<number, 'awaiting_schedule'>();
 
@@ -142,6 +145,125 @@ async function initialize() {
 bot.command('start', handleStart);
 // Регистрируем обработчик команды /help
 bot.command('help', handleHelp);
+
+// Обработчик фотографий - загружает их в Google Drive и сохраняет статью в базу данных (если есть подпись)
+bot.on('photo', async (ctx) => {
+  // Проверяем, что Google Drive инициализирован
+  if (!googleDriveService.isInitialized()) {
+    await ctx.reply('❌ Google Drive не настроен. Обратитесь к администратору.', getMainKeyboard());
+    return;
+  }
+
+  try {
+    // Получаем текст статьи из подписи к фото (caption)
+    const articleText = ctx.message.caption || '';
+    const hasText = articleText.trim().length > 0;
+
+    // Отправляем сообщение о начале обработки
+    const processingMessage = await ctx.reply(
+      hasText 
+        ? '📥 Загружаю изображение в Google Drive и сохраняю статью...' 
+        : '📥 Загружаю изображение в Google Drive...',
+      getMainKeyboard()
+    );
+
+    // Получаем фото из сообщения (берем самое большое доступное)
+    const photo = ctx.message.photo;
+    if (!photo || photo.length === 0) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        undefined,
+        '❌ Не удалось получить фото из сообщения.'
+      );
+      return;
+    }
+
+    // Берем фото с максимальным размером (последнее в массиве)
+    const largestPhoto = photo[photo.length - 1];
+    const fileId = largestPhoto.file_id;
+
+    // Получаем информацию о файле
+    const fileInfo = await ctx.telegram.getFile(fileId);
+    const filePath = fileInfo.file_path;
+
+    if (!filePath) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        undefined,
+        '❌ Не удалось получить путь к файлу.'
+      );
+      return;
+    }
+
+    // Формируем URL для скачивания файла
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+
+    // Скачиваем файл
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      throw new Error(`Ошибка при скачивании файла: ${response.statusText}`);
+    }
+
+    const fileBuffer = Buffer.from(await response.arrayBuffer());
+
+    // Определяем расширение файла из пути
+    const fileExtension = filePath.split('.').pop() || 'jpg';
+    const mimeType = fileExtension === 'png' ? 'image/png' : 'image/jpeg';
+
+    // Генерируем имя файла с временной меткой
+    const now = new Date();
+    const timestamp = formatMoscowTime(now).replace(/[.:\s]/g, '_');
+    const fileName = `telegram_${timestamp}.${fileExtension}`;
+
+    // Загружаем файл в Google Drive
+    const driveLink = await googleDriveService.uploadFile(fileName, fileBuffer, mimeType);
+
+    if (!driveLink) {
+      throw new Error('Не удалось получить ссылку на загруженный файл');
+    }
+
+    // Если есть текст статьи, сохраняем пост в базу данных
+    if (hasText) {
+      // Получаем последний пост из Supabase для расчета времени публикации
+      const lastPost = await supabaseService.getLastPost();
+      // Получаем актуальное расписание часов публикаций из Supabase
+      const scheduleHours = await supabaseService.getScheduleHours();
+      // Вычисляем следующую дату публикации на основе последнего поста
+      const nextPublishAt = calculateNextPublishAt(lastPost ? lastPost.publish_at : null, scheduleHours);
+
+      // Сохраняем статью в базу данных с текстом и ссылкой на изображение
+      const createdPost = await supabaseService.insertPost(articleText, nextPublishAt, driveLink);
+
+      // Форматируем дату публикации в строку вида DD.MM.YYYY HH:MM в московском времени
+      const publishDate = new Date(createdPost.publish_at);
+      const formattedDate = formatMoscowTime(publishDate);
+
+      // Обновляем сообщение с результатом
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        undefined,
+        `✅ Статья с изображением успешно сохранена!\n\n📝 Текст: ${articleText.substring(0, 100)}${articleText.length > 100 ? '...' : ''}\n📎 Изображение: ${driveLink}\n📅 Запланировано на: ${formattedDate}\n\nСтатус: ${createdPost.status}`
+      );
+    } else {
+      // Если текста нет, просто загружаем изображение и возвращаем ссылку
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        undefined,
+        `✅ Изображение успешно загружено в Google Drive!\n\n📎 Ссылка: ${driveLink}\n\n💡 Подсказка: Чтобы сохранить статью в базу данных, отправьте фото с подписью (текстом статьи).`
+      );
+    }
+  } catch (error: any) {
+    console.error('Ошибка при обработке фото:', error);
+    await ctx.reply(
+      `❌ Не удалось обработать изображение: ${error.message || 'Неизвестная ошибка'}`,
+      getMainKeyboard()
+    );
+  }
+});
 
 // Обработчик текстовых сообщений, который планирует посты
 bot.on('text', async (ctx) => {
