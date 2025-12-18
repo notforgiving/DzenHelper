@@ -135,39 +135,116 @@ export class SupabaseService {
     }
   }
 
-  // Метод для обновления статуса прошедших постов на опубликовано
-  async markPastPostsAsPublished(now: Date = new Date()): Promise<number> {
+  // Метод для получения расписания запланированных постов, начиная с текущего момента
+  async getScheduledPosts(now: Date = new Date()): Promise<PostRecord[]> {
     // Если клиент не инициализирован, выбрасываем ошибку
     if (!this.client) {
       throw new Error('Supabase клиент не инициализирован. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY.');
     }
 
     try {
-      // Выполняем обновление записей, у которых время публикации меньше или равно текущему
+      // Выполняем запрос к таблице post для получения всех постов со статусом scheduled
       const { data, error } = await this.client
         .from('post')
-        .update({ status: 'опубликовано' })
-        .lte('publish_at', now.toISOString())
+        // Выбираем все поля записи
+        .select('*')
+        // Ограничиваем выборку постами, запланированными на текущее или будущее время
+        .gte('publish_at', now.toISOString())
+        // Фильтруем только посты в статусе scheduled
         .eq('status', 'scheduled')
-        .select();
+        // Сортируем по времени публикации по возрастанию (от ближайших к более поздним)
+        .order('publish_at', { ascending: true });
 
       // Если Supabase вернул ошибку, пробрасываем её как исключение
       if (error) {
-        throw new Error(`Ошибка при обновлении статусов постов: ${error.message}`);
+        throw new Error(`Ошибка при получении расписания постов: ${error.message}`);
       }
 
-      // Если данных нет, считаем, что обновленных записей нет
+      // Если данных нет, возвращаем пустой массив как отсутствие запланированных постов
       if (!data) {
-        return 0;
+        return [];
       }
 
-      // Возвращаем количество обновленных записей
-      return data.length;
+      // Возвращаем список запланированных постов как массив PostRecord
+      return data as PostRecord[];
     } catch (error: any) {
-      // Логируем ошибку обновления статусов
-      console.error('Ошибка обновления статусов постов:', error);
+      // Логируем ошибку получения расписания
+      console.error('Ошибка получения расписания постов:', error);
       // Пробрасываем понятное исключение вверх
-      throw new Error(`Не удалось обновить статусы постов: ${error.message || error}`);
+      throw new Error(`Не удалось получить расписание постов: ${error.message || error}`);
+    }
+  }
+
+  // Метод для получения часов расписания публикаций из таблицы schedule_hours
+  async getScheduleHours(): Promise<number[]> {
+    // Если клиент не инициализирован, выбрасываем ошибку
+    if (!this.client) {
+      throw new Error('Supabase клиент не инициализирован. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY.');
+    }
+
+    try {
+      // Выполняем запрос к таблице schedule_hours и сортируем часы по возрастанию
+      const { data, error } = await this.client
+        .from('schedule_hours')
+        .select('hour')
+        .order('hour', { ascending: true });
+
+      // Если Supabase вернул ошибку, пробрасываем её как исключение
+      if (error) {
+        throw new Error(`Ошибка при получении часов расписания: ${error.message}`);
+      }
+
+      // Если данных нет или массив пустой, возвращаем дефолтные часы расписания
+      if (!data || data.length === 0) {
+        return [10, 15, 18];
+      }
+
+      // Преобразуем записи в массив чисел-часов и возвращаем его
+      return data.map((row: any) => row.hour as number);
+    } catch (error: any) {
+      // Логируем ошибку получения часов расписания
+      console.error('Ошибка получения часов расписания публикаций:', error);
+      // Пробрасываем понятное исключение вверх
+      throw new Error(`Не удалось получить часы расписания публикаций: ${error.message || error}`);
+    }
+  }
+
+  // Метод для полной перезаписи часов расписания публикаций в таблице schedule_hours
+  async replaceScheduleHours(hours: number[]): Promise<void> {
+    // Если клиент не инициализирован, выбрасываем ошибку
+    if (!this.client) {
+      throw new Error('Supabase клиент не инициализирован. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY.');
+    }
+
+    try {
+      // Удаляем все существующие записи из таблицы schedule_hours
+      const { error: deleteError } = await this.client
+        .from('schedule_hours')
+        .delete()
+        .gte('hour', 0);
+
+      // Если при удалении произошла ошибка, пробрасываем её как исключение
+      if (deleteError) {
+        throw new Error(`Ошибка при очистке часов расписания: ${deleteError.message}`);
+      }
+
+      // Формируем массив записей для вставки на основе переданных часов
+      const rows = hours.map((hour) => ({ hour }));
+
+      // Вставляем новые часы расписания в таблицу schedule_hours
+      const { error: insertError } = await this.client
+        .from('schedule_hours')
+        .insert(rows);
+
+      // Если при вставке произошла ошибка, пробрасываем её как исключение
+      if (insertError) {
+        throw new Error(`Ошибка при сохранении часов расписания: ${insertError.message}`);
+      }
+    } catch (error: any) {
+      // Логируем ошибку обновления часов расписания
+      console.error('Ошибка обновления часов расписания публикаций:', error);
+      // Пробрасываем понятное исключение вверх
+      throw new Error(`Не удалось обновить часы расписания публикаций: ${error.message || error}`);
     }
   }
 }
