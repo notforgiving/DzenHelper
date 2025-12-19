@@ -11,6 +11,8 @@ type PostRecord = {
   publish_at: string;
   // Статус поста
   status: string;
+  // Ссылка на изображение в Google Drive (опционально)
+  image_url?: string | null;
 };
 
 // Определяем константу с именем таблицы постов в Supabase
@@ -144,8 +146,14 @@ async function publishPostAndUpdateStatus(
   telegramToken: string,
   post: PostRecord,
 ): Promise<boolean> {
-  // Пытаемся отправить текст поста в Telegram‑канал
-  const sent = await sendTelegramMessage(telegramToken, TELEGRAM_CHAT_ID, post.text);
+  // Определяем, есть ли ссылка на изображение
+  const hasImage = post.image_url && post.image_url.trim().length > 0;
+  
+  // Если есть ссылка на изображение, отправляем фото с текстом
+  // Иначе отправляем просто текст
+  const sent = hasImage
+    ? await sendTelegramPhoto(telegramToken, TELEGRAM_CHAT_ID, post.text, post.image_url!)
+    : await sendTelegramMessage(telegramToken, TELEGRAM_CHAT_ID, post.text);
 
   // Если отправка завершилась неудачно, возвращаем false, не меняя статус поста
   if (!sent) {
@@ -219,6 +227,79 @@ async function sendTelegramMessage(
   } catch (error) {
     // В случае сетевой или другой непредвиденной ошибки логируем исключение
     console.error('Ошибка при отправке сообщения в Telegram:', error);
+    // Возвращаем флаг неуспешной отправки
+    return false;
+  }
+}
+
+// Объявляем функцию для отправки фото с текстом в Telegram‑канал
+async function sendTelegramPhoto(
+  telegramToken: string,
+  chatId: string,
+  caption: string,
+  imageUrl: string,
+): Promise<boolean> {
+  try {
+    // Преобразуем ссылку Google Drive в прямую ссылку для скачивания
+    // Формат ссылки Google Drive: https://drive.google.com/file/d/FILE_ID/view
+    // Преобразуем в: https://drive.google.com/uc?export=download&id=FILE_ID
+    let downloadUrl = imageUrl;
+    
+    // Извлекаем ID файла из ссылки Google Drive
+    const fileIdMatch = imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (fileIdMatch && fileIdMatch[1]) {
+      const fileId = fileIdMatch[1];
+      // Формируем прямую ссылку для скачивания
+      downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    }
+
+    // Скачиваем изображение
+    const imageResponse = await fetch(downloadUrl);
+    if (!imageResponse.ok) {
+      console.error(`Не удалось скачать изображение: ${imageResponse.statusText}`);
+      return false;
+    }
+
+    // Получаем изображение как массив байтов
+    const imageBytes = await imageResponse.arrayBuffer();
+    
+    // Создаем FormData для отправки фото
+    const formData = new FormData();
+    formData.append('chat_id', chatId);
+    formData.append('caption', caption);
+    formData.append('parse_mode', 'HTML');
+    
+    // Добавляем фото как blob в FormData
+    // В Deno FormData принимает Blob напрямую
+    const imageBlob = new Blob([imageBytes], { type: imageResponse.headers.get('content-type') || 'image/jpeg' });
+    formData.append('photo', imageBlob, 'image.jpg');
+
+    // Строим URL для метода отправки фото Telegram Bot API
+    const url = `${TELEGRAM_API_BASE}/bot${telegramToken}/sendPhoto`;
+
+    // Выполняем HTTP‑запрос к Telegram Bot API методом POST с FormData
+    const response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+    });
+
+    // Если HTTP‑статус не в диапазоне успешных, логируем ошибку и возвращаем false
+    if (!response.ok) {
+      // Читаем тело ответа для более подробной диагностики
+      const errorText = await response.text();
+      // Логируем код статуса и текст ошибки от Telegram
+      console.error(
+        `Ошибка Telegram API при отправке фото: status=${response.status}, body=${errorText}`,
+      );
+      // Возвращаем флаг неуспешной отправки
+      return false;
+    }
+
+    // Если ответ успешный, считаем, что фото отправлено, и возвращаем true
+    return true;
+  } catch (error) {
+    // В случае сетевой или другой непредвиденной ошибки логируем исключение
+    console.error('Ошибка при отправке фото в Telegram:', error);
     // Возвращаем флаг неуспешной отправки
     return false;
   }

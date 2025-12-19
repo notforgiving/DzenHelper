@@ -12,6 +12,8 @@ export interface PostRecord {
   status: string;
   // Время создания записи (ISO-строка)
   created_at: string;
+  // Ссылка на изображение (опционально)
+  image_url?: string | null;
 }
 
 // Класс для работы с Supabase и таблицей post
@@ -91,7 +93,7 @@ export class SupabaseService {
   }
 
   // Метод для вставки нового поста в таблицу post
-  async insertPost(text: string, publishAt: Date): Promise<PostRecord> {
+  async insertPost(text: string, publishAt: Date, imageUrl?: string | null): Promise<PostRecord> {
     // Если клиент не инициализирован, выбрасываем ошибку
     if (!this.client) {
       throw new Error('Supabase клиент не инициализирован. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY.');
@@ -99,7 +101,7 @@ export class SupabaseService {
 
     try {
       // Формируем объект для вставки в таблицу post
-      const insertPayload = {
+      const insertPayload: any = {
         // Записываем текст поста
         text: text,
         // Записываем дату публикации как ISO-строку
@@ -107,6 +109,11 @@ export class SupabaseService {
         // Указываем статус по умолчанию scheduled
         status: 'scheduled',
       };
+
+      // Если указана ссылка на изображение, добавляем её
+      if (imageUrl) {
+        insertPayload.image_url = imageUrl;
+      }
 
       // Выполняем вставку записи и сразу запрашиваем обратно вставленную строку
       const { data, error } = await this.client
