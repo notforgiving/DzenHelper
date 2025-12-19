@@ -6,10 +6,21 @@ import { GoogleDriveService } from './services/googledrive';
 import { getMoscowDateComponents, createMoscowDate, formatMoscowTime } from './utils/timezone';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const GOOGLE_FOLDER_ID = process.env.FOLDER_ID;
 
 if (!BOT_TOKEN) {
   console.error('❌ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!');
   console.error('Создайте файл .env и добавьте TELEGRAM_BOT_TOKEN=your_token_here');
+  process.exit(1);
+}
+
+if (!BOT_TOKEN) {
+  console.error('❌ TELEGRAM_BOT_TOKEN не установлен');
+  process.exit(1);
+}
+
+if (!GOOGLE_FOLDER_ID) {
+  console.error('❌ GOOGLE_FOLDER_ID не установлен');
   process.exit(1);
 }
 
@@ -18,10 +29,9 @@ const bot = new Telegraf(BOT_TOKEN, {
   handlerTimeout: 1800000,
 });
 
-// Создаем один экземпляр сервиса Supabase для всего бота
 const supabaseService = new SupabaseService();
-// Создаем экземпляр сервиса Google Drive
-const googleDriveService = new GoogleDriveService();
+const googleDriveService = new GoogleDriveService(GOOGLE_FOLDER_ID);
+
 // Создаем карту для хранения состояния пользователя по идентификатору чата
 const userState = new Map<number, 'awaiting_schedule'>();
 
@@ -125,19 +135,14 @@ function calculateNextPublishAt(lastPublishAtIso: string | null, slots: number[]
 
 // Функция инициализации бота и проверки подключения к Supabase
 async function initialize() {
-  try {
-    // Проверяем подключение к Supabase через сервис
-    const isConnected = await supabaseService.checkConnection();
-    // Если подключение успешно, выводим соответствующее сообщение
-    if (isConnected) {
-      console.log('✅ Подключение к Supabase установлено');
-    } else {
-      // Если подключение не удалось, выводим предупреждение о возможной проблеме с переменными окружения
-      console.warn('⚠️ Не удалось подключиться к Supabase. Проверьте переменные окружения SUPABASE_URL и SUPABASE_ANON_KEY');
-    }
-  } catch (error) {
-    // Логируем ошибку проверки подключения к Supabase
-    console.warn('⚠️ Ошибка при проверке подключения к Supabase:', error);
+  await googleDriveService.init();
+  console.log('✅ Google Drive инициализирован');
+
+  const isConnected = await supabaseService.checkConnection();
+  if (isConnected) {
+    console.log('✅ Supabase подключён');
+  } else {
+    console.warn('⚠️ Supabase не отвечает');
   }
 }
 
@@ -148,118 +153,74 @@ bot.command('help', handleHelp);
 
 // Обработчик фотографий - загружает их в Google Drive и сохраняет статью в базу данных (если есть подпись)
 bot.on('photo', async (ctx) => {
-  // Проверяем, что Google Drive инициализирован
-  if (!googleDriveService.isInitialized()) {
-    await ctx.reply('❌ Google Drive не настроен.');
-    return;
-  }
-
   try {
-    // Получаем текст статьи из подписи к фото (caption)
     const articleText = ctx.message.caption || '';
     const hasText = articleText.trim().length > 0;
 
-    // Отправляем сообщение о начале обработки
     const processingMessage = await ctx.reply(
-      hasText 
-        ? '📥 Загружаю изображение в Google Drive и сохраняю статью...' 
-        : '📥 Загружаю изображение в Google Drive...',
+      hasText
+        ? '📥 Загружаю изображение и сохраняю статью...'
+        : '📥 Загружаю изображение...',
       getMainKeyboard()
     );
 
-    // Получаем фото из сообщения (берем самое большое доступное)
-    const photo = ctx.message.photo;
-    if (!photo || photo.length === 0) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        processingMessage.message_id,
-        undefined,
-        '❌ Не удалось получить фото из сообщения.'
-      );
-      return;
-    }
+    const largestPhoto = ctx.message.photo.at(-1);
+    if (!largestPhoto) throw new Error('Фото не найдено');
 
-    // Берем фото с максимальным размером (последнее в массиве)
-    const largestPhoto = photo[photo.length - 1];
-    const fileId = largestPhoto.file_id;
+    const fileInfo = await ctx.telegram.getFile(largestPhoto.file_id);
+    if (!fileInfo.file_path) throw new Error('file_path пустой');
 
-    // Получаем информацию о файле
-    const fileInfo = await ctx.telegram.getFile(fileId);
-    const filePath = fileInfo.file_path;
-
-    if (!filePath) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        processingMessage.message_id,
-        undefined,
-        '❌ Не удалось получить путь к файлу.'
-      );
-      return;
-    }
-
-    // Формируем URL для скачивания файла
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
-
-    // Скачиваем файл
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
     const response = await fetch(fileUrl);
-    if (!response.ok) {
-      throw new Error(`Ошибка при скачивании файла: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error('Ошибка скачивания файла');
 
-    const fileBuffer = Buffer.from(await response.arrayBuffer());
+    const buffer = Buffer.from(await response.arrayBuffer());
 
-    // Определяем расширение файла из пути
-    const fileExtension = filePath.split('.').pop() || 'jpg';
-    const mimeType = fileExtension === 'png' ? 'image/png' : 'image/jpeg';
+    const ext = fileInfo.file_path.split('.').pop() || 'jpg';
+    const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+    const fileName = `telegram_${formatMoscowTime(new Date()).replace(
+      /[.:\s]/g,
+      '_'
+    )}.${ext}`;
 
-    // Генерируем имя файла с временной меткой
-    const now = new Date();
-    const timestamp = formatMoscowTime(now).replace(/[.:\s]/g, '_');
-    const fileName = `telegram_${timestamp}.${fileExtension}`;
+    const driveLink = await googleDriveService.uploadFile(
+      fileName,
+      buffer,
+      mimeType
+    );
 
-    // Загружаем файл в Google Drive
-    const driveLink = await googleDriveService.uploadFile(fileName, fileBuffer, mimeType);
-
-    if (!driveLink) {
-      throw new Error('Не удалось получить ссылку на загруженный файл');
-    }
-
-    // Если есть текст статьи, сохраняем пост в базу данных
     if (hasText) {
-      // Получаем последний пост из Supabase для расчета времени публикации
       const lastPost = await supabaseService.getLastPost();
-      // Получаем актуальное расписание часов публикаций из Supabase
-      const scheduleHours = await supabaseService.getScheduleHours();
-      // Вычисляем следующую дату публикации на основе последнего поста
-      const nextPublishAt = calculateNextPublishAt(lastPost ? lastPost.publish_at : null, scheduleHours);
+      const slots = await supabaseService.getScheduleHours();
+      const publishAt = calculateNextPublishAt(
+        lastPost?.publish_at || null,
+        slots
+      );
 
-      // Сохраняем статью в базу данных с текстом и ссылкой на изображение
-      const createdPost = await supabaseService.insertPost(articleText, nextPublishAt, driveLink);
+      const post = await supabaseService.insertPost(
+        articleText,
+        publishAt,
+        driveLink
+      );
 
-      // Форматируем дату публикации в строку вида DD.MM.YYYY HH:MM в московском времени
-      const publishDate = new Date(createdPost.publish_at);
-      const formattedDate = formatMoscowTime(publishDate);
-
-      // Обновляем сообщение с результатом
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        processingMessage.message_id,
-        undefined,
-        `✅ Статья с изображением успешно сохранена!\n\n📝 Текст: ${articleText.substring(0, 100)}${articleText.length > 100 ? '...' : ''}\n📎 Изображение: ${driveLink}\n📅 Запланировано на: ${formattedDate}\n\nСтатус: ${createdPost.status}`
+      await ctx.reply(
+        `✅ Статья сохранена\n\n📅 ${formatMoscowTime(
+          new Date(post.publish_at)
+        )}`,
+        getMainKeyboard()
       );
     } else {
-      // Если текста нет, просто загружаем изображение и возвращаем ссылку
       await ctx.telegram.editMessageText(
         ctx.chat.id,
         processingMessage.message_id,
         undefined,
-        `✅ Изображение успешно загружено в Google Drive!\n\n📎 Ссылка: ${driveLink}\n\n💡 Подсказка: Чтобы сохранить статью в базу данных, отправьте фото с подписью (текстом статьи).`
+        `✅ Изображение загружено\n\n📎 ${driveLink}`
       );
     }
   } catch (error: any) {
-    console.error('Ошибка при обработке фото:', error);
+    console.error(error);
     await ctx.reply(
-      `❌ Не удалось обработать изображение: ${error.message || 'Неизвестная ошибка'}`,
+      `❌ Ошибка: ${error.message || 'Неизвестная ошибка'}`,
       getMainKeyboard()
     );
   }
@@ -278,7 +239,7 @@ bot.on('text', async (ctx) => {
   const chatId = ctx.chat?.id;
 
   // Сначала проверяем кнопки - они должны работать всегда, даже в режиме ожидания ввода расписания
-  
+
   // Если пользователь нажал кнопку "Отменить", выходим из режима ввода расписания
   if (text === 'Отменить') {
     if (chatId !== undefined && userState.get(chatId) === 'awaiting_schedule') {
@@ -298,7 +259,7 @@ bot.on('text', async (ctx) => {
     if (chatId !== undefined && userState.get(chatId) === 'awaiting_schedule') {
       userState.delete(chatId);
     }
-    
+
     try {
       // Получаем из базы данных все посты со статусом scheduled, запланированные на текущее и будущее время
       const scheduledPosts = await supabaseService.getScheduledPosts();
@@ -446,31 +407,15 @@ bot.catch((err, ctx) => {
 });
 
 // Функция запуска бота
-async function start() {
-  // Выполняем инициализацию (проверку Supabase)
-  await initialize();
-
-  // Логируем начало запуска бота
-  console.log('🚀 Запуск Telegram бота...');
-  // Логируем напоминание о необходимости корректной настройки Supabase
-  console.log('📋 Убедитесь, что Supabase настроен (SUPABASE_URL и SUPABASE_ANON_KEY в .env)');
-
-  // Запускаем бота и обрабатываем результат запуска
-  bot.launch().then(() => {
-    // Логируем успешный запуск бота
-    console.log('✅ Бот успешно запущен!');
-  }).catch((error) => {
-    // Логируем ошибку запуска бота
-    console.error('❌ Ошибка при запуске бота:', error);
-    // Завершаем процесс с кодом ошибки
+initialize()
+  .then(() => bot.launch())
+  .then(() => console.log('🤖 Бот запущен'))
+  .catch((e) => {
+    console.error('❌ Ошибка запуска', e);
     process.exit(1);
   });
-}
 
 // Обрабатываем сигнал SIGINT для корректной остановки бота
 process.once('SIGINT', () => bot.stop('SIGINT'));
 // Обрабатываем сигнал SIGTERM для корректной остановки бота
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-// Запускаем основной процесс старта бота
-start();

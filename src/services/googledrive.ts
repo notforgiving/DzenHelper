@@ -1,41 +1,51 @@
-import { google } from 'googleapis';
+import { google, drive_v3 } from 'googleapis';
+import fs from 'fs';
+import path from 'path';
 import { Readable } from 'stream';
 
+const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+const TOKEN_PATH = path.resolve('token.json');
+const CREDENTIALS_PATH = path.resolve('credentials.json');
+
 export class GoogleDriveService {
-  private drive;
-  private folderId?: string;
+  private drive!: drive_v3.Drive;
+  private folderId: string;
+  private initialized = false;
 
-  constructor() {
-    const {
-      GOOGLE_CLIENT_ID,
-      GOOGLE_CLIENT_SECRET,
-      GOOGLE_REFRESH_TOKEN,
-      GOOGLE_DRIVE_FOLDER_ID,
-    } = process.env;
-
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
-      throw new Error('Google OAuth env vars are missing');
-    }
-
-    const oauth2Client = new google.auth.OAuth2(
-      GOOGLE_CLIENT_ID,
-      GOOGLE_CLIENT_SECRET
-    );
-
-    oauth2Client.setCredentials({
-      refresh_token: GOOGLE_REFRESH_TOKEN,
-    });
-
-    this.drive = google.drive({
-      version: 'v3',
-      auth: oauth2Client,
-    });
-
-    this.folderId = GOOGLE_DRIVE_FOLDER_ID;
+  constructor(folderId: string) {
+    this.folderId = folderId;
   }
 
   isInitialized(): boolean {
-    return !!this.drive;
+    return this.initialized;
+  }
+
+  async init(): Promise<void> {
+    if (this.initialized) return;
+
+    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
+    const { client_secret, client_id, redirect_uris } = credentials.installed;
+
+    const auth = new google.auth.OAuth2(
+      client_id,
+      client_secret,
+      redirect_uris[0]
+    );
+
+    if (!fs.existsSync(TOKEN_PATH)) {
+      throw new Error('token.json не найден. Авторизуй Google Drive.');
+    }
+
+    auth.setCredentials(
+      JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'))
+    );
+
+    this.drive = google.drive({
+      version: 'v3',
+      auth,
+    });
+
+    this.initialized = true;
   }
 
   async uploadFile(
@@ -43,37 +53,37 @@ export class GoogleDriveService {
     buffer: Buffer,
     mimeType: string
   ): Promise<string> {
-    try {
-      const stream = Readable.from(buffer);
-
-      const requestBody: any = {
-        name: fileName,
-      };
-
-      if (this.folderId) {
-        requestBody.parents = [this.folderId];
-      }
-
-      const res = await this.drive.files.create({
-        requestBody,
-        media: {
-          mimeType,
-          body: stream,
-        },
-        fields: 'id, webViewLink',
-      });
-
-      if (!res.data.webViewLink) {
-        throw new Error('Google Drive did not return a link');
-      }
-
-      return res.data.webViewLink;
-    } catch (e: any) {
-      console.error(
-        'Google Drive upload error:',
-        e?.response?.data || e
-      );
-      throw e;
+    if (!this.initialized) {
+      throw new Error('Google Drive не инициализирован');
     }
+
+    const stream = Readable.from(buffer);
+
+    const { data } = await this.drive.files.create({
+      requestBody: {
+        name: fileName,
+        parents: [this.folderId],
+      },
+      media: {
+        mimeType,
+        body: stream,
+      },
+      fields: 'id',
+    });
+
+    if (!data.id) {
+      throw new Error('Google Drive не вернул fileId');
+    }
+
+    // ДЕЛАЕМ ФАЙЛ ПУБЛИЧНЫМ
+    await this.drive.permissions.create({
+      fileId: data.id,
+      requestBody: {
+        type: 'anyone',
+        role: 'reader',
+      },
+    });
+
+    return `https://drive.google.com/uc?id=${data.id}`;
   }
 }
