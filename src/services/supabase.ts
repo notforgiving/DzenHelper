@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { GoogleDriveService } from './googledrive';
 
 // Интерфейс для записи поста в таблице post
 export interface PostRecord {
@@ -252,6 +253,67 @@ export class SupabaseService {
       console.error('Ошибка обновления часов расписания публикаций:', error);
       // Пробрасываем понятное исключение вверх
       throw new Error(`Не удалось обновить часы расписания публикаций: ${error.message || error}`);
+    }
+  }
+
+  // Метод для удаления постов со статусом 'published' и их файлов из Google Drive
+  async deletePublishedPosts(googleDriveService?: GoogleDriveService): Promise<number> {
+    try {
+      // Проверяем, инициализирован ли клиент Supabase
+      if (!this.client) {
+        throw new Error('Клиент Supabase не инициализирован. Проверьте настройки подключения.');
+      }
+
+      // 1. Сначала получаем все посты со статусом 'published' и их image_url
+      const { data: posts, error: fetchError } = await this.client
+        .from('post')
+        .select('id, image_url')
+        .eq('status', 'published');
+
+      if (fetchError) {
+        throw new Error(`Ошибка при получении списка постов: ${fetchError.message}`);
+      }
+
+      // 2. Если есть Google Drive сервис и есть посты с изображениями
+      if (googleDriveService && posts && posts.length > 0) {
+        try {
+          // Удаляем каждый файл из Google Drive
+          for (const post of posts) {
+            if (post.image_url) {
+              try {
+                await googleDriveService.deleteFileByUrl(post.image_url);
+              } catch (error: any) {
+                console.error(`Ошибка при удалении файла ${post.image_url}:`, error.message);
+                // Продолжаем удаление других файлов, даже если один не удалился
+              }
+            } else {
+              console.log(`У поста ID: ${post.id} нет изображения для удаления`);
+            }
+          }
+        } catch (error: any) {
+          console.error('Ошибка при удалении файлов из Google Drive:', error.message);
+          // Продолжаем удаление записей из БД, даже если не удалось удалить файлы
+        }
+      }
+
+      // 3. Удаляем все посты со статусом 'published' из базы данных
+      const { count, error: deleteError } = await this.client
+        .from('post')
+        .delete({ count: 'exact' })
+        .eq('status', 'published');
+
+      // Если произошла ошибка при удалении записей
+      if (deleteError) {
+        throw new Error(`Ошибка при удалении записей из базы данных: ${deleteError.message}`);
+      }
+
+      console.log(`Удалено ${count || 0} записей из базы данных`);
+      return count || 0;
+    } catch (error: any) {
+      // Логируем ошибку удаления постов
+      console.error('Ошибка удаления опубликованных постов:', error);
+      // Пробрасываем понятное исключение вверх
+      throw new Error(`Не удалось удалить опубликованные посты: ${error.message || error}`);
     }
   }
 }

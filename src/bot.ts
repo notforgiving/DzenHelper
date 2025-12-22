@@ -294,6 +294,26 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+// Обработка кнопки "Чистка таблицы"
+if (text === 'Чистка таблицы') {
+  try {
+    // Инициализируем Google Drive, если еще не инициализирован
+    if (!googleDriveService.isInitialized()) {
+      await googleDriveService.init();
+    }
+    
+    // Удаляем опубликованные посты и связанные файлы
+    const deletedCount = await supabaseService.deletePublishedPosts(googleDriveService);
+    
+    // Отправляем сообщение о результате
+    await ctx.reply(`✅ Удалено ${deletedCount} опубликованных постов и их файлов.`);
+  } catch (error: any) {
+    console.error('Ошибка при очистке таблицы:', error);
+    await ctx.reply(`❌ Произошла ошибка при очистке таблицы: ${error.message}`);
+  }
+  return;
+}
+
   // Если пользователь нажал кнопку изменения расписания, запрашиваем новые часы публикаций
   if (text === 'Изменить расписание') {
     // Если идентификатор чата отсутствует, не можем продолжить диалог и просто выходим
@@ -389,7 +409,7 @@ bot.on('text', async (ctx) => {
     const formattedDate = formatMoscowTime(publishDate);
 
     // Отправляем пользователю подтверждение с датой и временем публикации
-    await ctx.reply(`✅ Пост запланирован на ${formattedDate} (статус: ${createdPost.status}).`);
+    await ctx.reply(`✅ Пост запланирован на ${formattedDate}.`);
   } catch (error: any) {
     // Логируем ошибку планирования поста
     console.error('Ошибка при планировании поста:', error);

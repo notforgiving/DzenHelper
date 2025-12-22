@@ -86,4 +86,42 @@ export class GoogleDriveService {
 
     return `https://drive.google.com/uc?id=${data.id}`;
   }
+
+  /**
+   * Удаляет файл из Google Drive по его публичной ссылке
+   * @param fileUrl Публичная ссылка на файл в формате https://drive.google.com/uc?id=FILE_ID
+   * @returns Promise, который разрешается при успешном удалении
+   * @throws {Error} Если Google Drive не инициализирован или произошла ошибка при удалении
+   */
+  async deleteFileByUrl(fileUrl: string): Promise<void> {
+    if (!this.initialized) {
+      throw new Error('Google Drive не инициализирован');
+    }
+
+    // Извлекаем ID файла из URL
+    const fileIdMatch = fileUrl.match(/[?&]id=([^&]+)/);
+    if (!fileIdMatch) {
+      throw new Error('Некорректный формат URL файла');
+    }
+
+    const fileId = fileIdMatch[1];
+    try {
+      const response = await this.drive.files.delete({
+        fileId: fileId,
+        supportsAllDrives: true
+      });
+    } catch (error: any) {
+      console.error('Детали ошибки при удалении файла:', {
+        code: error.code,
+        message: error.message,
+        response: error.response?.data
+      });
+      
+      if (error.code === 404) {
+        console.warn(`Файл с ID ${fileId} не найден`);
+        return;
+      }
+      throw new Error(`Ошибка при удалении файла: ${error.message}`);
+    }
+  }
 }
